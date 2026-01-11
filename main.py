@@ -6,7 +6,6 @@ from collections import defaultdict
 import asyncio
 from datetime import datetime, timedelta
 import hashlib
-from keep_alive import keep_alive
 
 # --- Setup ---
 intents = discord.Intents.default()
@@ -266,7 +265,7 @@ async def process_payment(data, approved):
     task_idx = data.get("task_idx")
 
     req_data = await load_json('requests.json', dict)
-    if request_id not in req_data:  # ✅ PERBAIKAN: ganti req_ → req_data
+    if request_id not in req_data:
         return
 
     request = req_data[request_id]
@@ -280,7 +279,6 @@ async def process_payment(data, approved):
                     task["status"] = "open"
                     task["assigned_to"] = None
         else:
-            # Tidak hapus like/retweet/follow — sekali klaim, tetap tercatat
             pass
 
         req_data[request_id] = request
@@ -469,7 +467,7 @@ async def on_reaction_add(reaction, user):
 
     req_data = await load_json('requests.json', dict)
     msg_id = str(reaction.message.id)
-    if msg_id not in req_data:  # ✅ PERBAIKAN: ganti req_ → req_data
+    if msg_id not in req_data:
         return
 
     request = req_data[msg_id]
@@ -506,7 +504,6 @@ async def on_reaction_add(reaction, user):
                 pass
             return
     elif task_type == "follow":
-        # Follow: sekali seumur hidup per pasangan user (bukan per link)
         if follow_key in global_follows:
             await reaction.message.remove_reaction(emoji_str, user)
             try:
@@ -517,7 +514,6 @@ async def on_reaction_add(reaction, user):
         global_follows[follow_key] = True
         await save_json('global_follows.json', global_follows)
 
-    # Simpan ke log hanya untuk like/retweet (per link)
     if task_type in ("like", "retweet"):
         await mark_engaged(user.id, request['link'], task_type)
 
@@ -594,13 +590,12 @@ async def on_reaction_add(reaction, user):
 
 @bot.event
 async def on_reaction_remove(reaction, user):
-    # Nonaktifkan unreact untuk engagement — cegah abuse
     if user == bot.user or not isinstance(reaction.message.channel, discord.TextChannel):
         return
     if reaction.message.author == bot.user and reaction.message.channel.name == "jual-beli":
         emoji_str = str(reaction.emoji)
         if emoji_str in {"❤️", "🔁", "👥"}:
-            return  # ✅ Abaikan saja
+            return
 
 # --- COMMANDS ---
 @bot.command(name="beli")
@@ -630,7 +625,7 @@ async def buy_engagement(ctx, days: int, link: str, *, comments_raw: str = ""):
     current_points = points_data.get(user_id_str, 0)
     if current_points < total_price:
         await ctx.send(f"❌ Kamu butuh **{total_price} poin**. Saldo: **{current_points}**.", delete_after=5)
-        await ctx.message.delete()  # ✅ PASTIKAN INI ADA!
+        await ctx.message.delete()
         return
 
     points_data[user_id_str] = round(current_points - total_price, 1)
@@ -690,7 +685,7 @@ async def take_task(ctx, task_number: int):
 
     req_data = await load_json('requests.json', dict)
     msg_id = str(referenced_msg.id)
-    if msg_id not in req_data:  # ✅ PERBAIKAN: ganti req_ → req_data
+    if msg_id not in req_data:
         await ctx.send("❌ Request tidak ditemukan atau sudah kadaluarsa.", delete_after=5)
         await ctx.message.delete()
         return
@@ -702,7 +697,6 @@ async def take_task(ctx, task_number: int):
         await ctx.message.delete()
         return
 
-    # 🔒 CEK MUTUAL FOLLOW WAJIB
     global_follows = await load_json('global_follows.json', dict)
     follow_key = f"{ctx.author.id}_{requester_id}"
     if follow_key not in global_follows:
@@ -745,128 +739,4 @@ async def take_task(ctx, task_number: int):
 
     price = task["price"]
     requester_member = bot.guilds[0].get_member(int(requester_id))
-    dermawan_role = discord.utils.get(bot.guilds[0].roles, name="Dermawan")
-    is_dermawan = requester_member and dermawan_role and dermawan_role in requester_member.roles
-    user_pays = round(price * 0.5, 1) if is_dermawan else price
-
-    try:
-        confirm_msg = await requester.send(
-            f"💬 <@{ctx.author.id}> telah mengambil dan mengklaim menyelesaikan komentar: _‘{task['text']}’_\n"
-            f"Link: {request['link']}\n"
-            f"Harga: **{price} poin**\n"
-            f"{'(subsidi sistem: ' + str(price - user_pays) + ' poin)' if (price - user_pays) > 0 else ''}\n\n"
-            f"✅ **React ini jika TUGAS BENAR**\n"
-            f"❌ **React ini jika TUGAS SALAH/TIDAK DILAKUKAN**\n"
-            f"⏳ Jika tidak ada reaksi dalam **15 menit**, transaksi **dianggap sah**."
-        )
-        await confirm_msg.add_reaction("✅")
-        await confirm_msg.add_reaction("❌")
-        pending_data = await load_pending()
-        pending_data[str(confirm_msg.id)] = {
-            "request_id": msg_id,
-            "task_idx": task_idx,
-            "seller_id": ctx.author.id,
-            "requester_id": requester_id,
-            "price": price,
-            "user_pays": user_pays,
-            "is_comment": True,
-            "task_type": "comment"
-        }
-        await save_pending(pending_data)
-
-        async def timeout_handler():
-            await asyncio.sleep(900)
-            pending_data = await load_pending()
-            key = str(confirm_msg.id)
-            if key in pending_data:
-                data = pending_data.pop(key)
-                await save_pending(pending_data)
-                await process_payment(data, approved=True)
-                try:
-                    if confirm_msg.author == bot.user:
-                        await confirm_msg.delete()
-                except discord.NotFound:
-                    pass
-                except Exception as e:
-                    print(f"⚠️ Gagal hapus DM setelah timeout: {e}")
-
-        bot.loop.create_task(timeout_handler())
-
-    except discord.Forbidden:
-        await notify_dm_failure(ctx.guild, requester, f"Gagal kirim konfirmasi komentar oleh <@{ctx.author.id}>.")
-
-@bot.command(name="saldo")
-async def check_balance(ctx):
-    pts = (await load_json('points.json', dict)).get(str(ctx.author.id), 0)
-    await ctx.send(f"💰 **{ctx.author.display_name}** memiliki **{pts} poin**.")
-    await ctx.message.delete()
-
-@bot.command(name="givepoint")
-async def give_point(ctx, member: discord.Member, amount: int = 1):
-    if ctx.channel.name != "bukti-transaksi":
-        await ctx.send("❌ Gunakan command ini hanya di `#bukti-transaksi`.", delete_after=5)
-        await ctx.message.delete()
-        return
-    if member == ctx.author:
-        await ctx.send("❌ Tidak bisa transfer ke diri sendiri.", delete_after=5)
-        await ctx.message.delete()
-        return
-    if amount < 1:
-        await ctx.send("❌ Jumlah minimal 1 poin.", delete_after=5)
-        await ctx.message.delete()
-        return
-
-    giver_id = str(ctx.author.id)
-    if not can_give_point(giver_id):
-        await ctx.send("❌ Maksimal 3 poin/hari.", delete_after=5)
-        await ctx.message.delete()
-        return
-
-    tax = 1 if amount < 10 else max(1, round(amount * 0.2, 1))
-    total_cost = amount + tax
-    points_data = await load_json('points.json', dict)
-    giver_bal = points_data.get(giver_id, 0)
-    if giver_bal < total_cost:
-        await ctx.send(f"❌ Saldo tidak cukup. Butuh **{total_cost} poin** (termasuk pajak {tax} poin).", delete_after=5)
-        await ctx.message.delete()
-        return
-
-    points_data[giver_id] = round(giver_bal - total_cost, 1)
-    receiver_id = str(member.id)
-    points_data[receiver_id] = points_data.get(receiver_id, 0) + amount
-    await save_json('points.json', points_data)
-
-    giver_count = await load_json('giver_count.json', dict)
-    giver_count[giver_id] = giver_count.get(giver_id, 0) + 1
-    giver_count[f"{giver_id}_total"] = giver_count.get(f"{giver_id}_total", 0) + amount
-    await save_json('giver_count.json', giver_count)
-
-    use_give_point(giver_id)
-    await update_user_role(member)
-    await update_user_role(ctx.author)
-    await ctx.send(f"✨ {ctx.author.mention} memberi **{amount} poin** ke {member.mention}! (Pajak: {tax} poin)")
-    await ctx.message.delete()
-
-@bot.command()
-@commands.has_role("🛡️ Peacekeeper")
-async def addpoint(ctx, member: discord.Member, amount: float):
-    if not (-20 <= amount <= 20):
-        await ctx.send("❌ Jumlah harus antara -20 hingga 20.")
-        return
-    data = await load_json('points.json', dict)
-    user_id = str(member.id)
-    old_balance = data.get(user_id, 0)
-    new_balance = round(old_balance + amount, 1)
-    data[user_id] = new_balance
-    await save_json('points.json', data)
-    action = "ditambahkan" if amount > 0 else "dikurangi"
-    await ctx.send(f"✅ Poin {member.mention} {action} sebesar {abs(amount)}. Saldo baru: **{new_balance}**")
-
-# --- Run ---
-if __name__ == "__main__":
-    keep_alive()
-    token = os.getenv("DISCORD_TOKEN")
-    if token:
-        bot.run(token)
-    else:
-        print("❌ ERROR: DISCORD_TOKEN tidak ditemukan!")
+    dermawan_role = discord.utils
