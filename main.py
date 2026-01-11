@@ -514,6 +514,7 @@ async def on_reaction_add(reaction, user):
         global_follows[follow_key] = True
         await save_json('global_follows.json', global_follows)
 
+    # Simpan ke log hanya untuk like/retweet (per link)
     if task_type in ("like", "retweet"):
         await mark_engaged(user.id, request['link'], task_type)
 
@@ -590,12 +591,13 @@ async def on_reaction_add(reaction, user):
 
 @bot.event
 async def on_reaction_remove(reaction, user):
+    # Nonaktifkan unreact untuk engagement — cegah abuse
     if user == bot.user or not isinstance(reaction.message.channel, discord.TextChannel):
         return
     if reaction.message.author == bot.user and reaction.message.channel.name == "jual-beli":
         emoji_str = str(reaction.emoji)
         if emoji_str in {"❤️", "🔁", "👥"}:
-            return
+            return  # ✅ Abaikan saja
 
 # --- COMMANDS ---
 @bot.command(name="beli")
@@ -697,6 +699,7 @@ async def take_task(ctx, task_number: int):
         await ctx.message.delete()
         return
 
+    # 🔒 CEK MUTUAL FOLLOW WAJIB
     global_follows = await load_json('global_follows.json', dict)
     follow_key = f"{ctx.author.id}_{requester_id}"
     if follow_key not in global_follows:
